@@ -20,12 +20,18 @@ fn rocket() -> Rocket<Build> {
         .mount("/both", FileServer::new(&root, Options::DotFiles | Options::Index))
         .mount("/redir", FileServer::new(&root, Options::NormalizeDirs))
         .mount("/redir_index", FileServer::new(&root, Options::NormalizeDirs | Options::Index))
+        .mount("/compressed", FileServer::new(&root, Options::CheckCompressed))
 }
 
 static REGULAR_FILES: &[&str] = &[
     "index.html",
     "inner/goodbye",
     "inner/index.html",
+    "other/hello.txt",
+    "other/hello.txt.gz",
+];
+
+static COMPRESSED_FILES: &[&str] = &[
     "other/hello.txt",
 ];
 
@@ -39,21 +45,34 @@ static INDEXED_DIRECTORIES: &[&str] = &[
     "inner/",
 ];
 
-fn assert_file(client: &Client, prefix: &str, path: &str, exists: bool) {
+fn assert_file(client: &Client, prefix: &str, path: &str, exists: bool, compressed: bool) {
     let full_path = format!("/{}/{}", prefix, path);
-    let response = client.get(full_path).dispatch();
+    let mut response = client.get(full_path).dispatch();
     if exists {
         assert_eq!(response.status(), Status::Ok);
 
-        let mut path = static_root().join(path);
+        let mut path = match compressed {
+            true  => static_root().join(format!("{path}.gz")),
+            false => static_root().join(path),
+        };
         if path.is_dir() {
             path = path.join("index.html");
         }
 
         let mut file = File::open(path).expect("open file");
-        let mut expected_contents = String::new();
-        file.read_to_string(&mut expected_contents).expect("read file");
-        assert_eq!(response.into_string(), Some(expected_contents));
+        let mut expected_contents = vec![];
+        file.read_to_end(&mut expected_contents).expect("read file");
+
+        let mut actual = vec![];
+        response.read_to_end(&mut actual).expect("read response");
+
+        let ce: Vec<&str> = response.headers().get("Content-Encoding").collect();
+        if compressed {
+            assert_eq!(vec!["gzip"], ce);
+        } else {
+            assert_eq!(Vec::<&str>::new(), ce);
+        } 
+        assert_eq!(actual, expected_contents);
     } else {
         assert_eq!(response.status(), Status::NotFound);
     }
@@ -61,7 +80,7 @@ fn assert_file(client: &Client, prefix: &str, path: &str, exists: bool) {
 
 fn assert_all(client: &Client, prefix: &str, paths: &[&str], exist: bool) {
     for path in paths.iter() {
-        assert_file(client, prefix, path, exist);
+        assert_file(client, prefix, path, exist, false);
     }
 }
 
@@ -185,4 +204,12 @@ fn test_redirection() {
     let response = client.get("/redir_index").dispatch();
     assert_eq!(response.status(), Status::PermanentRedirect);
     assert_eq!(response.headers().get("Location").next(), Some("/redir_index/"));
+}
+
+#[test]
+fn test_compression() {
+    let client = Client::debug(rocket()).expect("valid rocket");
+    for path in COMPRESSED_FILES {
+        assert_file(&client, "compressed", path, true, true)
+    }
 }

@@ -238,8 +238,22 @@ impl Handler for FileServer {
                 let index = NamedFile::open(p.join("index.html")).await;
                 index.respond_to(req).or_forward((data, Status::NotFound))
             },
-            Some(p) => {
-                let file = NamedFile::open(p).await;
+            Some(mut p) => {
+                let check_compressed = options.contains(Options::CheckCompressed);
+                if check_compressed {
+                    if let Some(file) = p.file_name() {
+                        let mut compressed = file.to_os_string();
+                        compressed.push(".gz");
+                        let compressed_file = p.with_file_name(compressed);
+                        if compressed_file.exists() {
+                            p = compressed_file;
+                        }
+                    }
+                }
+                let file = match check_compressed {
+                    true  => NamedFile::open_compressed(p).await,
+                    false => NamedFile::open(p).await,
+                };
                 file.respond_to(req).or_forward((data, Status::NotFound))
             }
             None => Outcome::forward(data, Status::NotFound),
@@ -258,6 +272,7 @@ impl Handler for FileServer {
 ///   * [`Options::Missing`] - Don't fail if the path to serve is missing.
 ///   * [`Options::NormalizeDirs`] - Redirect directories without a trailing
 ///     slash to ones with a trailing slash.
+///   * [`Options::CheckCompressed`] - Serve pre-compressed files if they exist.
 ///
 /// `Options` structures can be `or`d together to select two or more options.
 /// For instance, to request that both dot files and index pages be returned,
@@ -359,6 +374,10 @@ impl Options {
     /// By default, `FileServer` will error if the path to serve is missing to
     /// prevent inevitable 404 errors. This option overrides that.
     pub const Missing: Options = Options(1 << 4);
+
+    /// Check for and serve pre-zipped files on the filesystem based on
+    /// a similarly named file with a `.gz` extension.
+    pub const CheckCompressed: Options = Options(1 << 5);
 
     /// Returns `true` if `self` is a superset of `other`. In other words,
     /// returns `true` if all of the options in `other` are also in `self`.
