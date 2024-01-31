@@ -5,6 +5,7 @@ use rocket::{Rocket, Route, Build};
 use rocket::http::Status;
 use rocket::local::blocking::Client;
 use rocket::fs::{FileServer, Options, relative};
+use rocket_http::Header;
 
 fn static_root() -> &'static Path {
     Path::new(relative!("/tests/static"))
@@ -47,7 +48,9 @@ static INDEXED_DIRECTORIES: &[&str] = &[
 
 fn assert_file(client: &Client, prefix: &str, path: &str, exists: bool, compressed: bool) {
     let full_path = format!("/{}/{}", prefix, path);
-    let mut response = client.get(full_path).dispatch();
+    let mut request = client.get(full_path);
+    request.add_header(Header::new("Accept-Encoding", "gzip"));
+    let mut response = request.dispatch();
     if exists {
         assert_eq!(response.status(), Status::Ok);
 

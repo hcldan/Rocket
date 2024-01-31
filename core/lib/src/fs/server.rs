@@ -239,7 +239,10 @@ impl Handler for FileServer {
                 index.respond_to(req).or_forward((data, Status::NotFound))
             },
             Some(mut p) => {
-                let check_compressed = options.contains(Options::CheckCompressed);
+                let gzip_accepted = req.headers().get("Accept-Encoding")
+                    .find(|value| value.contains("gzip"))
+                    .is_some();
+                let check_compressed = gzip_accepted && options.contains(Options::CheckCompressed);
                 if check_compressed {
                     if let Some(file) = p.file_name() {
                         let mut compressed = file.to_os_string();
