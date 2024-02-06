@@ -219,26 +219,26 @@ impl Handler for FileServer {
             .map(|path| self.root.join(path));
 
         match path {
-            Some(p) if p.is_dir() => {
-                // Normalize '/a/b/foo' to '/a/b/foo/'.
-                if options.contains(Options::NormalizeDirs) && !req.uri().path().ends_with('/') {
-                    let normal = req.uri().map_path(|p| format!("{}/", p))
-                        .expect("adding a trailing slash to a known good path => valid path")
-                        .into_owned();
-
-                    return Redirect::permanent(normal)
-                        .respond_to(req)
-                        .or_forward((data, Status::InternalServerError));
-                }
-
-                if !options.contains(Options::Index) {
-                    return Outcome::forward(data, Status::NotFound);
-                }
-
-                let index = NamedFile::open(p.join("index.html")).await;
-                index.respond_to(req).or_forward((data, Status::NotFound))
-            },
             Some(mut p) => {
+                if p.is_dir() {
+                    // Normalize '/a/b/foo' to '/a/b/foo/'.
+                    if options.contains(Options::NormalizeDirs) && !req.uri().path().ends_with('/') {
+                        let normal = req.uri().map_path(|p| format!("{}/", p))
+                            .expect("adding a trailing slash to a known good path => valid path")
+                            .into_owned();
+        
+                        return Redirect::permanent(normal)
+                            .respond_to(req)
+                            .or_forward((data, Status::InternalServerError));
+                    }
+        
+                    if !options.contains(Options::Index) {
+                        return Outcome::forward(data, Status::NotFound);
+                    }
+        
+                    p = p.join("index.html");        
+                }
+
                 let gzip_accepted = req.headers().get("Accept-Encoding")
                     .find(|value| value.contains("gzip"))
                     .is_some();
