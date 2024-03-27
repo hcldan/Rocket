@@ -1,11 +1,13 @@
 use std::path::{PathBuf, Path};
 
+use rocket_http::{AcceptEncoding, ContentCoding};
+
 use crate::{Request, Data};
 use crate::http::{Method, Status, uri::Segments, ext::IntoOwned};
 use crate::route::{Route, Handler, Outcome};
 use crate::response::{Redirect, Responder};
 use crate::outcome::IntoOutcome;
-use crate::fs::NamedFile;
+use crate::fs::{MaybeCompressedFile, NamedFile, ServerFile};
 
 /// Custom handler for serving static files.
 ///
@@ -218,28 +220,46 @@ impl Handler for FileServer {
             .map(|path| self.root.join(path));
 
         match path {
-            Some(p) if p.is_dir() => {
-                // Normalize '/a/b/foo' to '/a/b/foo/'.
-                if options.contains(Options::NormalizeDirs) && !req.uri().path().ends_with('/') {
-                    let normal = req.uri().map_path(|p| format!("{}/", p))
-                        .expect("adding a trailing slash to a known good path => valid path")
-                        .into_owned();
+            Some(mut p) => {
+                if p.is_dir() {
+                    // Normalize '/a/b/foo' to '/a/b/foo/'.
+                    if options.contains(Options::NormalizeDirs) && !req.uri().path().ends_with('/') {
+                        let normal = req.uri().map_path(|p| format!("{}/", p))
+                            .expect("adding a trailing slash to a known good path => valid path")
+                            .into_owned();
 
-                    return Redirect::permanent(normal)
-                        .respond_to(req)
-                        .or_forward((data, Status::InternalServerError));
+                        return Redirect::permanent(normal)
+                            .respond_to(req)
+                            .or_forward((data, Status::InternalServerError));
+                    }
+
+                    if !options.contains(Options::Index) {
+                        return Outcome::forward(data, Status::NotFound);
+                    }
+
+                    p = p.join("index.html");        
                 }
 
-                if !options.contains(Options::Index) {
-                    return Outcome::forward(data, Status::NotFound);
-                }
+                let encoding = match options.contains(Options::PreZipped) {
+                    true => req.headers()
+                            .get_one("Accept-Encoding")
+                            .and_then(|v| v.parse().ok())
+                            .map(|ae: AcceptEncoding| {
+                                ae.content_codings()
+                                    .filter(|cc| cc.is_known())
+                                    .filter(|cc| cc.weight().unwrap_or(1f32) > 0f32)
+                                    // Our current impl will prefer gzip if the client accepts it.
+                                    .map(|cc| {
+                                        if cc.is_any() { ContentCoding::GZIP  } else { cc.to_owned() }
+                                    })
+                                    .collect::<Vec<ContentCoding>>()
+                            })
+                            .and_then(|ccs| ccs.into_iter().reduce(|acc, cc| if acc.is_gzip() { acc } else { cc })),
+                    false => None,
+                }.unwrap_or(ContentCoding::IDENTITY);
 
-                let index = NamedFile::open(p.join("index.html")).await;
-                index.respond_to(req).or_forward((data, Status::NotFound))
-            },
-            Some(p) => {
-                let file = NamedFile::open(p).await;
-                file.respond_to(req).or_forward((data, Status::NotFound))
+                ServerFile::new(MaybeCompressedFile::open(encoding, p).await).await
+                    .respond_to(req).or_forward((data, Status::NotFound))
             }
             None => Outcome::forward(data, Status::NotFound),
         }
@@ -257,6 +277,7 @@ impl Handler for FileServer {
 ///   * [`Options::Missing`] - Don't fail if the path to serve is missing.
 ///   * [`Options::NormalizeDirs`] - Redirect directories without a trailing
 ///     slash to ones with a trailing slash.
+///   * [`Options::PreZipped`] - Serve pre-compressed files if they exist.
 ///
 /// `Options` structures can be `or`d together to select two or more options.
 /// For instance, to request that both dot files and index pages be returned,
@@ -365,6 +386,10 @@ impl Options {
     /// By default, `FileServer` will error if the path to serve is missing to
     /// prevent inevitable 404 errors. This option overrides that.
     pub const Missing: Options = Options(1 << 4);
+
+    /// Check for and serve pre-zipped files on the filesystem based on
+    /// a similarly named file with a `.gz` extension.
+    pub const PreZipped: Options = Options(1 << 5);
 
     /// Returns `true` if `self` is a superset of `other`. In other words,
     /// returns `true` if all of the options in `other` are also in `self`.
