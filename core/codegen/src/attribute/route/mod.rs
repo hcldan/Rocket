@@ -123,12 +123,14 @@ fn request_guard_decl(guard: &Guard) -> TokenStream {
     define_spanned_export!(ty.span() =>
         __req, __data, _request, display_hack, FromRequest, Outcome
     );
+    
+    let path = module_path!();
 
     quote_spanned! { ty.span() =>
         let #ident: #ty = match <#ty as #FromRequest>::from_request(#__req).await {
             #Outcome::Success(__v) => __v,
             #Outcome::Forward(__e) => {
-                ::rocket::trace::info!(name: "forward", parameter = stringify!(#ident),
+                ::rocket::trace::info!(name: "forward", target: &#path, parameter = stringify!(#ident),
                     type_name = stringify!(#ty), status = __e.code,
                     "request guard forwarding");
 
@@ -136,7 +138,7 @@ fn request_guard_decl(guard: &Guard) -> TokenStream {
             },
             #[allow(unreachable_code)]
             #Outcome::Error((__c, __e)) => {
-                ::rocket::trace::info!(name: "failure", parameter = stringify!(#ident),
+                ::rocket::trace::info!(name: "failure", target: &#path, parameter = stringify!(#ident),
                     type_name = stringify!(#ty), reason = %#display_hack!(__e),
                     "request guard failed");
 
@@ -369,8 +371,9 @@ fn codegen_route(route: Route) -> Result<TokenStream> {
     let format = Optional(route.attr.format.as_ref());
 
     Ok(quote! {
+        
         #handler_fn
-
+        
         #[doc(hidden)]
         #[allow(nonstandard_style)]
         /// Rocket code generated proxy structure.
